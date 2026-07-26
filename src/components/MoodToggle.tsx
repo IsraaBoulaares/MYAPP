@@ -1,0 +1,124 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  Animated,
+  Easing,
+  LayoutChangeEvent,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { MOODS, MOOD_ORDER, palette, type MoodKey } from '../theme';
+
+type Props = {
+  value: MoodKey;
+  onChange: (mood: MoodKey) => void;
+};
+
+const PAD = 4;
+
+export default function MoodToggle({ value, onChange }: Props) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const pos = useRef(new Animated.Value(MOOD_ORDER.indexOf(value))).current;
+
+  // Thumb position and colour ride the same value, so they stay in lockstep.
+  // Both are JS-driven — translateX can't share a native node with backgroundColor.
+  useEffect(() => {
+    Animated.timing(pos, {
+      toValue: MOOD_ORDER.indexOf(value),
+      duration: 280,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [pos, value]);
+
+  const onLayout = (e: LayoutChangeEvent) =>
+    setTrackWidth(e.nativeEvent.layout.width);
+
+  const segment = trackWidth > 0 ? (trackWidth - PAD * 2) / MOOD_ORDER.length : 0;
+  const inputRange = MOOD_ORDER.map((_, i) => i);
+
+  return (
+    <View style={styles.track} onLayout={onLayout}>
+      {segment > 0 && (
+        <Animated.View
+          style={[
+            styles.thumb,
+            {
+              width: segment,
+              backgroundColor: pos.interpolate({
+                inputRange,
+                outputRange: MOOD_ORDER.map((k) => MOODS[k].bubble),
+              }),
+              borderColor: pos.interpolate({
+                inputRange,
+                outputRange: MOOD_ORDER.map((k) => MOODS[k].accent),
+              }),
+              transform: [
+                {
+                  translateX: pos.interpolate({
+                    inputRange,
+                    outputRange: inputRange.map((i) => i * segment),
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      )}
+
+      {MOOD_ORDER.map((key) => {
+        const selected = key === value;
+        return (
+          <Pressable
+            key={key}
+            onPress={() => onChange(key)}
+            style={styles.segment}
+            accessibilityRole="radio"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`${MOODS[key].label} mood`}
+          >
+            <Text
+              style={[
+                styles.label,
+                selected && { color: MOODS[key].accent, fontWeight: '600' },
+              ]}
+            >
+              {MOODS[key].label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  track: {
+    flexDirection: 'row',
+    backgroundColor: palette.surface,
+    borderRadius: 14,
+    padding: PAD,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  thumb: {
+    position: 'absolute',
+    top: PAD,
+    left: PAD,
+    bottom: PAD,
+    borderRadius: 11,
+    borderWidth: 1,
+  },
+  segment: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  label: {
+    color: palette.textMuted,
+    fontSize: 14,
+    letterSpacing: 0.2,
+  },
+});
