@@ -31,6 +31,7 @@ import { useSpeechInput } from '../hooks/useSpeechInput';
 import { clearChatHistory, loadChatHistory, saveChatHistory } from '../storage/chatHistory';
 import { MOODS, palette, type MoodKey } from '../theme';
 import type { Message } from '../types';
+import { speakReply, stopSpeaking } from '../voice/tts';
 
 const MIC_UNAVAILABLE_LINE = "Voice input isn't available on this device — typing works great too.";
 const MIC_DENIED_LINE =
@@ -143,6 +144,20 @@ export default function ChatScreen() {
     },
   });
 
+  // Off by default — text-first users shouldn't be surprised by audio the
+  // first time they open the app. Session-scoped (not persisted) by design,
+  // same reasoning: it should never turn itself on without the user asking.
+  const [voiceRepliesEnabled, setVoiceRepliesEnabled] = useState(false);
+  const voiceRepliesEnabledRef = useRef(false);
+  const toggleVoiceReplies = useCallback(() => {
+    setVoiceRepliesEnabled((prev) => {
+      const next = !prev;
+      voiceRepliesEnabledRef.current = next;
+      if (!next) stopSpeaking();
+      return next;
+    });
+  }, []);
+
   const mountedRef = useRef(true);
   // Cancels whatever stream is currently in flight — called on unmount so a
   // response arriving after the screen is gone can't touch dead state.
@@ -151,6 +166,7 @@ export default function ChatScreen() {
     () => () => {
       mountedRef.current = false;
       streamCancelRef.current?.();
+      stopSpeaking();
     },
     [],
   );
@@ -266,6 +282,11 @@ export default function ChatScreen() {
 
       const replyId = nextId();
       let replyStarted = false;
+      let fullReplyText = '';
+      // Captured once when the reply first appears, so the voice — like the
+      // bubble's own colour — reflects the mood the reply displayed under,
+      // not whatever mood might auto-shift to right afterward.
+      let replyMood: MoodKey = moodRef.current;
 
       // Runs the offline degrade path for a failed reply. `kind` decides
       // the wording (a real network failure gets a one-time "having
@@ -286,10 +307,13 @@ export default function ChatScreen() {
             appendInterruptionNote(replyId);
           } else if (kind === 'network' && !wasAlreadyFallback) {
             appendMiloReply(NETWORK_TROUBLE_LINE, current);
+            if (voiceRepliesEnabledRef.current) speakReply(NETWORK_TROUBLE_LINE, current);
           } else {
             const cursor = fallbackCursor.current[current];
             fallbackCursor.current[current] = cursor + 1;
-            appendMiloReply(fallbackReply(current, cursor), current);
+            const fallbackText = fallbackReply(current, cursor);
+            appendMiloReply(fallbackText, current);
+            if (voiceRepliesEnabledRef.current) speakReply(fallbackText, current);
           }
         } catch (fallbackErr) {
           // Tier 3 — even the offline fallback path broke. Rare (it's pure
@@ -309,12 +333,14 @@ export default function ChatScreen() {
       streamCancelRef.current = streamMiloReply(moodAtSend, historyForApi, {
         onDelta: (delta) => {
           if (!mountedRef.current) return;
+          fullReplyText += delta;
           if (!replyStarted) {
             replyStarted = true;
+            replyMood = moodRef.current;
             setThinking(false);
             setMessages((prev) => [
               ...prev,
-              { id: replyId, role: 'milo', text: delta, mood: moodRef.current },
+              { id: replyId, role: 'milo', text: delta, mood: replyMood },
             ]);
           } else {
             setMessages((prev) =>
@@ -332,6 +358,7 @@ export default function ChatScreen() {
             return;
           }
           setFallbackMode(false);
+          if (voiceRepliesEnabledRef.current) speakReply(fullReplyText, replyMood);
           // Apply any mood shift after the reply that's already showing —
           // it was composed under the mood active when it was sent.
           maybeAutoShiftMood(detectedMood);
@@ -407,20 +434,39 @@ export default function ChatScreen() {
           <Pressable onPress={() => Keyboard.dismiss()} onLongPress={handleClearHistory}>
             <Text style={styles.wordmark}>milo</Text>
           </Pressable>
-          <Text
-            style={[
-              styles.status,
-              { color: usingFallback && !thinking ? palette.textMuted : active.accent },
-            ]}
-          >
-            {thinking
-              ? 'thinking…'
-              : micListening
-                ? 'listening…'
-                : usingFallback
-                  ? 'on autopilot'
-                  : 'listening'}
-          </Text>
+          <View style={styles.headerRight}>
+            <Pressable
+              onPress={toggleVoiceReplies}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={voiceRepliesEnabled ? 'Turn off voice replies' : 'Turn on voice replies'}
+              accessibilityState={{ selected: voiceRepliesEnabled }}
+              style={[
+                styles.voiceToggle,
+                voiceRepliesEnabled && { borderColor: active.accent, backgroundColor: active.bubble },
+              ]}
+            >
+              <Text
+                style={[styles.voiceToggleText, voiceRepliesEnabled && { color: active.accent }]}
+              >
+                Voice
+              </Text>
+            </Pressable>
+            <Text
+              style={[
+                styles.status,
+                { color: usingFallback && !thinking ? palette.textMuted : active.accent },
+              ]}
+            >
+              {thinking
+                ? 'thinking…'
+                : micListening
+                  ? 'listening…'
+                  : usingFallback
+                    ? 'on autopilot'
+                    : 'listening'}
+            </Text>
+          </View>
         </View>
 
         <Animated.View
@@ -513,7 +559,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 22,
     paddingTop: 8,
@@ -524,6 +570,24 @@ const styles = StyleSheet.create({
     fontSize: 21,
     fontWeight: '700',
     letterSpacing: 1.5,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  voiceToggle: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  voiceToggleText: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    color: palette.textMuted,
   },
   status: {
     fontSize: 12.5,
