@@ -124,7 +124,7 @@ export default function ChatScreen() {
   // Shown at most once per session — repeating it on every mic tap while
   // permission stays denied would just be noise, not helpful.
   const micNoticeShownRef = useRef(false);
-  const { isListening: micListening, toggle: toggleMic } = useSpeechInput({
+  const { isListening: micListening, volume: micVolume, toggle: toggleMic } = useSpeechInput({
     onTranscriptChange: setComposerDraft,
     onDenied: () => {
       if (micNoticeShownRef.current) return;
@@ -485,7 +485,12 @@ export default function ChatScreen() {
             accessibilityRole="button"
             accessibilityLabel={micListening ? 'Stop voice input and send' : 'Start voice input'}
           >
-            <OrbSection mood={mood} energized={thinking || micListening} />
+            <OrbSection
+              mood={mood}
+              energized={thinking}
+              listening={micListening}
+              volume={micVolume}
+            />
           </Pressable>
         </Animated.View>
 
@@ -532,20 +537,25 @@ export default function ChatScreen() {
 }
 
 /** Memoised so appending a message doesn't restart the orb's breathing loop.
- * `energized` drives the same pulse for two distinct situations — Milo
- * composing a reply, or the mic actively listening — since both read as
- * "something dynamic is happening" on the same visual language. */
+ * `energized` (Milo composing a reply) and `listening` (mic capturing
+ * audio, reacting to `volume`) are visually distinct now — the former is
+ * a fixed boosted pulse, the latter reacts continuously to live amplitude —
+ * though both still read as "something dynamic is happening". */
 const OrbSection = memo(function OrbSection({
   mood,
   energized,
+  listening,
+  volume,
 }: {
   mood: MoodKey;
   energized: boolean;
+  listening: boolean;
+  volume: number;
 }) {
   const moodStyle = MOODS[mood];
   return (
     <>
-      <VoiceOrb mood={moodStyle} active={energized} />
+      <VoiceOrb mood={moodStyle} active={energized} listening={listening} volume={volume} />
       <Text style={styles.tagline}>{moodStyle.tagline}</Text>
     </>
   );

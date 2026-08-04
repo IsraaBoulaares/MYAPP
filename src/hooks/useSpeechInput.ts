@@ -39,6 +39,9 @@ type Options = {
  */
 export function useSpeechInput({ onTranscriptChange, onDenied, onUnavailable }: Options) {
   const [isListening, setIsListening] = useState(false);
+  // 0–1 normalized live mic amplitude, for driving the orb's pulse while
+  // listening. Reset to 0 whenever listening stops for any reason.
+  const [volume, setVolume] = useState(0);
 
   const onTranscriptChangeRef = useRef(onTranscriptChange);
   onTranscriptChangeRef.current = onTranscriptChange;
@@ -50,13 +53,26 @@ export function useSpeechInput({ onTranscriptChange, onDenied, onUnavailable }: 
     // Both an explicit error and the recognizer naturally ending (e.g. it
     // decided speech was done) should drop back out of "listening" state —
     // otherwise the orb would keep pulsing after the mic has already closed.
-    SpeechRecognition.useSpeechRecognitionEvent('error', () => setIsListening(false));
-    SpeechRecognition.useSpeechRecognitionEvent('end', () => setIsListening(false));
+    SpeechRecognition.useSpeechRecognitionEvent('error', () => {
+      setIsListening(false);
+      setVolume(0);
+    });
+    SpeechRecognition.useSpeechRecognitionEvent('end', () => {
+      setIsListening(false);
+      setVolume(0);
+    });
+    // Docs: value ranges roughly -2 to 10; anything below 0 counts as
+    // inaudible. Normalized to 0–1 for the orb, clamped at both ends since
+    // real input can occasionally spike outside the documented range.
+    SpeechRecognition.useSpeechRecognitionEvent('volumechange', (event) => {
+      setVolume(Math.max(0, Math.min(1, event.value / 10)));
+    });
   }
 
   const stop = useCallback(() => {
     SpeechRecognition?.ExpoSpeechRecognitionModule.stop();
     setIsListening(false);
+    setVolume(0);
   }, []);
 
   const start = useCallback(async () => {
@@ -84,6 +100,7 @@ export function useSpeechInput({ onTranscriptChange, onDenied, onUnavailable }: 
         lang: 'en-US',
         interimResults: true,
         continuous: true,
+        volumeChangeEventOptions: { enabled: true, intervalMillis: 100 },
       });
       setIsListening(true);
     } catch {
@@ -101,5 +118,5 @@ export function useSpeechInput({ onTranscriptChange, onDenied, onUnavailable }: 
     }
   }, [isListening, start, stop]);
 
-  return { isListening, toggle };
+  return { isListening, volume, toggle };
 }
