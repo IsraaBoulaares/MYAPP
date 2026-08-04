@@ -6,7 +6,9 @@ type ChatRole = 'user' | 'niko';
 type ChatMessage = { role: ChatRole; text: string };
 
 const MOOD_KEYS: MoodKey[] = ['steady', 'soft', 'playful'];
-const MODEL = 'gemini-2.5-flash';
+// Floating alias (not a pinned version) so this doesn't 404 again the next
+// time Google retires a dated model for new API keys/projects.
+const MODEL = 'gemini-flash-latest';
 // Keeps token usage bounded on very long conversations.
 const MAX_HISTORY = 20;
 
