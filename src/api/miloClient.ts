@@ -46,7 +46,20 @@ export async function fetchMiloReply(mood: MoodKey, history: Message[]): Promise
     });
 
     if (!response.ok) {
-      throw new MiloApiError(`Milo API responded with ${response.status}`);
+      // Best-effort read of the upstream status the server attached (e.g.
+      // 429 quota, 404 retired model) so callers can log a real cause
+      // instead of a bare "502" that looks like a generic outage.
+      let upstreamStatus: number | null = null;
+      try {
+        const errBody = (await response.json()) as { upstreamStatus?: unknown };
+        if (typeof errBody.upstreamStatus === 'number') upstreamStatus = errBody.upstreamStatus;
+      } catch {
+        // Non-JSON or empty error body — fall through with just response.status.
+      }
+      throw new MiloApiError(
+        `Milo API responded with ${response.status}` +
+          (upstreamStatus ? ` (Gemini ${upstreamStatus})` : ''),
+      );
     }
 
     const data = (await response.json()) as { reply?: unknown; detectedMood?: unknown };

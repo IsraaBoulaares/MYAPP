@@ -174,7 +174,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({ reply, detectedMood });
   } catch (err) {
     console.error('Milo chat error:', err);
-    res.status(502).json({ error: 'Failed to reach Gemini' });
+    // Surface Gemini's own HTTP status (e.g. 429 quota, 404 retired model)
+    // so the client can tell a capacity/config issue apart from a real bug
+    // without exposing the full internal error text.
+    const upstreamStatus = err instanceof ApiError ? err.status : null;
+    res.status(502).json({ error: 'Failed to reach Gemini', upstreamStatus });
   }
 }
 

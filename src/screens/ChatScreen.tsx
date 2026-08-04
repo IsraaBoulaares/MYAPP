@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Easing,
   FlatList,
@@ -19,6 +20,7 @@ import MoodToggle from '../components/MoodToggle';
 import TypingIndicator from '../components/TypingIndicator';
 import VoiceOrb from '../components/VoiceOrb';
 import { fallbackReply, moodShiftLine, opener } from '../data/cannedReplies';
+import { clearChatHistory, loadChatHistory, saveChatHistory } from '../storage/chatHistory';
 import { MOODS, palette, type MoodKey } from '../theme';
 import type { Message } from '../types';
 
@@ -33,6 +35,13 @@ const THINK_MS: Record<MoodKey, number> = {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const freshOpener = (): Message => ({
+  id: 'm-opener',
+  role: 'milo',
+  text: opener('steady'),
+  mood: 'steady',
+});
+
 // Natural height of the orb + tagline (VoiceOrb's 208px SIZE, plus the
 // tagline and its spacing) — the amount of room reclaimed when it collapses.
 const ORB_COLLAPSE_HEIGHT = 260;
@@ -45,12 +54,19 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const [mood, setMood] = useState<MoodKey>('steady');
   const [thinking, setThinking] = useState(false);
-  const [messages, setMessages] = useState<Message[]>(() => [
-    { id: 'm-opener', role: 'milo', text: opener('steady'), mood: 'steady' },
-  ]);
+  // Starts empty — populated by the hydration effect below with either
+  // restored history or the fresh opener, whichever applies. Rendering
+  // nothing here avoids a flash of the opener that then gets replaced.
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [hydrated, setHydrated] = useState(false);
 
+  // IDs are namespaced per app launch so a restored message from a prior
+  // session (which has its own old id) can never collide with an id
+  // generated in this one — nextId() alone would restart from 0 every
+  // launch and collide with restored ids like "m0", "m1".
+  const sessionPrefix = useRef(Date.now().toString(36)).current;
   const idRef = useRef(0);
-  const nextId = () => `m${idRef.current++}`;
+  const nextId = () => `m-${sessionPrefix}-${idRef.current++}`;
 
   // Mirrors `mood` so a pending reply can read the latest value without
   // reaching into a state updater for it.
@@ -84,6 +100,35 @@ export default function ChatScreen() {
     },
     [],
   );
+
+  // Restores saved history + mood on launch, or falls back to the fresh
+  // opener if there's none yet (first-ever launch).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const saved = await loadChatHistory();
+      if (cancelled) return;
+      if (saved && saved.messages.length > 0) {
+        setMessages(saved.messages);
+        setMood(saved.mood);
+        moodRef.current = saved.mood;
+      } else {
+        setMessages([freshOpener()]);
+      }
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persists after every change, once initial load has settled — guards
+  // against overwriting real saved history with the empty initial state
+  // before hydration completes.
+  useEffect(() => {
+    if (!hydrated) return;
+    saveChatHistory(messages, mood);
+  }, [messages, mood, hydrated]);
 
   const listRef = useRef<FlatList<Message>>(null);
 
@@ -158,7 +203,16 @@ export default function ChatScreen() {
         // already reflects it, not the following one.
         maybeAutoShiftMood(detectedMood);
         appendMiloReply(reply, moodRef.current);
-      } catch {
+      } catch (err) {
+        // Dev-only — never rendered in the UI, just visible in the Metro
+        // console — so a real bug and a Gemini quota/outage blip aren't
+        // both silently indistinguishable behind "it fell back to canned".
+        if (__DEV__) {
+          console.log(
+            '[Milo] fetchMiloReply failed, falling back to canned reply:',
+            err instanceof Error ? err.message : err,
+          );
+        }
         // Gemini/Vercel unreachable — fall back to a canned reply so the
         // app still feels alive, with the same mood-dependent pacing. No
         // classification is available offline, so mood doesn't auto-shift.
@@ -184,13 +238,39 @@ export default function ChatScreen() {
     ]);
   }, []);
 
+  const handleClearHistory = useCallback(() => {
+    Alert.alert(
+      'Clear conversation?',
+      "This deletes your saved chat history on this device. Can't be undone.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            (async () => {
+              await clearChatHistory();
+              if (!mountedRef.current) return;
+              lastManualChangeRef.current = 0;
+              moodRef.current = 'steady';
+              setMood('steady');
+              setMessages([freshOpener()]);
+            })();
+          },
+        },
+      ],
+    );
+  }, []);
+
   const active = MOODS[mood];
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <Pressable onPress={() => Keyboard.dismiss()}>
         <View style={styles.header}>
-          <Text style={styles.wordmark}>milo</Text>
+          <Pressable onPress={() => Keyboard.dismiss()} onLongPress={handleClearHistory}>
+            <Text style={styles.wordmark}>milo</Text>
+          </Pressable>
           <Text style={[styles.status, { color: active.accent }]}>
             {thinking ? 'thinking…' : 'listening'}
           </Text>
@@ -240,7 +320,7 @@ export default function ChatScreen() {
         />
 
         <View style={{ paddingBottom: insets.bottom }}>
-          <Composer mood={active} onSend={handleSend} disabled={thinking} />
+          <Composer mood={active} onSend={handleSend} disabled={thinking || !hydrated} />
         </View>
       </KeyboardAvoidingView>
     </View>
