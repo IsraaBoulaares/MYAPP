@@ -1,8 +1,12 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -28,6 +32,10 @@ const THINK_MS: Record<MoodKey, number> = {
 };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Natural height of the orb + tagline (VoiceOrb's 208px SIZE, plus the
+// tagline and its spacing) — the amount of room reclaimed when it collapses.
+const ORB_COLLAPSE_HEIGHT = 260;
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
@@ -67,6 +75,30 @@ export default function ChatScreen() {
   );
 
   const listRef = useRef<FlatList<Message>>(null);
+
+  // Collapses the ornamental orb while the keyboard is open, so the thread
+  // (not the orb) gets the screen space the keyboard takes away. Header and
+  // mood toggle stay put — they're cheap and still useful while typing.
+  const keyboardAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const animateTo = (toValue: number) =>
+      Animated.timing(keyboardAnim, {
+        toValue,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false, // height/maxHeight can't run on the native driver
+      }).start();
+
+    const onShow = Keyboard.addListener(showEvent, () => animateTo(1));
+    const onHide = Keyboard.addListener(hideEvent, () => animateTo(0));
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, [keyboardAnim]);
 
   const scrollToEnd = useCallback(() => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
@@ -121,20 +153,33 @@ export default function ChatScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Text style={styles.wordmark}>niko</Text>
-        <Text style={[styles.status, { color: active.accent }]}>
-          {thinking ? 'thinking…' : 'listening'}
-        </Text>
-      </View>
+      <Pressable onPress={() => Keyboard.dismiss()}>
+        <View style={styles.header}>
+          <Text style={styles.wordmark}>niko</Text>
+          <Text style={[styles.status, { color: active.accent }]}>
+            {thinking ? 'thinking…' : 'listening'}
+          </Text>
+        </View>
 
-      <View style={styles.orbArea}>
-        <OrbSection mood={mood} thinking={thinking} />
-      </View>
+        <Animated.View
+          style={{
+            opacity: keyboardAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+            maxHeight: keyboardAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [ORB_COLLAPSE_HEIGHT, 0],
+            }),
+            overflow: 'hidden',
+          }}
+        >
+          <View style={styles.orbArea}>
+            <OrbSection mood={mood} thinking={thinking} />
+          </View>
+        </Animated.View>
 
-      <View style={styles.toggleArea}>
-        <MoodToggle value={mood} onChange={handleMoodChange} />
-      </View>
+        <View style={styles.toggleArea}>
+          <MoodToggle value={mood} onChange={handleMoodChange} />
+        </View>
+      </Pressable>
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -143,6 +188,7 @@ export default function ChatScreen() {
       >
         <FlatList
           ref={listRef}
+          style={styles.list}
           data={messages}
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <MessageBubble message={item} />}
@@ -151,6 +197,7 @@ export default function ChatScreen() {
           onContentSizeChange={scrollToEnd}
           ListFooterComponent={thinking ? <TypingIndicator mood={active} /> : null}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
         />
 
         <View style={{ paddingBottom: insets.bottom }}>
@@ -216,6 +263,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingTop: 18,
     paddingBottom: 14,
+  },
+  list: {
+    flex: 1,
   },
   thread: {
     paddingTop: 8,
