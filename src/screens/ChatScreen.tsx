@@ -27,9 +27,14 @@ import {
   NETWORK_TROUBLE_LINE,
   opener,
 } from '../data/cannedReplies';
+import { useSpeechInput } from '../hooks/useSpeechInput';
 import { clearChatHistory, loadChatHistory, saveChatHistory } from '../storage/chatHistory';
 import { MOODS, palette, type MoodKey } from '../theme';
 import type { Message } from '../types';
+
+const MIC_UNAVAILABLE_LINE = "Voice input isn't available on this device — typing works great too.";
+const MIC_DENIED_LINE =
+  "I can't hear you without microphone access — you can turn it on anytime in Settings. Typing works great too.";
 
 /** Only used for the offline fallback, so its personality still comes through
  * even when Gemini is unreachable — playful answers back fast, soft takes
@@ -66,6 +71,10 @@ export default function ChatScreen() {
   // nothing here avoids a flash of the opener that then gets replaced.
   const [messages, setMessages] = useState<Message[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  // Lifted out of Composer (rather than owned internally) so voice input
+  // can push live partial transcripts into the same field the user types
+  // into, instead of needing a separate display.
+  const [composerDraft, setComposerDraft] = useState('');
 
   // IDs are namespaced per app launch so a restored message from a prior
   // session (which has its own old id) can never collide with an id
@@ -110,6 +119,29 @@ export default function ChatScreen() {
     usingFallbackRef.current = value;
     setUsingFallback(value);
   };
+
+  // Shown at most once per session — repeating it on every mic tap while
+  // permission stays denied would just be noise, not helpful.
+  const micNoticeShownRef = useRef(false);
+  const { isListening: micListening, toggle: toggleMic } = useSpeechInput({
+    onTranscriptChange: setComposerDraft,
+    onDenied: () => {
+      if (micNoticeShownRef.current) return;
+      micNoticeShownRef.current = true;
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: 'system', text: MIC_DENIED_LINE, mood: moodRef.current },
+      ]);
+    },
+    onUnavailable: () => {
+      if (micNoticeShownRef.current) return;
+      micNoticeShownRef.current = true;
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: 'system', text: MIC_UNAVAILABLE_LINE, mood: moodRef.current },
+      ]);
+    },
+  });
 
   const mountedRef = useRef(true);
   // Cancels whatever stream is currently in flight — called on unmount so a
@@ -217,6 +249,12 @@ export default function ChatScreen() {
 
   const handleSend = useCallback(
     (text: string) => {
+      // A message can be sent while the mic is still open (e.g. tapping the
+      // composer's own send button mid-dictation) — make sure the session
+      // actually closes rather than leaving it capturing audio in the
+      // background with the orb still pulsing as if listening.
+      if (micListening) toggleMic();
+
       const moodAtSend = moodRef.current;
       const userMessage: Message = { id: nextId(), role: 'user', text, mood: moodAtSend };
       // The user's own message is appended immediately, before anything
@@ -307,8 +345,21 @@ export default function ChatScreen() {
         },
       });
     },
-    [appendMiloReply, appendInterruptionNote, maybeAutoShiftMood],
+    [appendMiloReply, appendInterruptionNote, maybeAutoShiftMood, micListening, toggleMic],
   );
+
+  const handleOrbTap = useCallback(() => {
+    Keyboard.dismiss();
+    if (micListening) {
+      toggleMic();
+      const transcript = composerDraft.trim();
+      setComposerDraft('');
+      if (transcript) handleSend(transcript);
+      return;
+    }
+    setComposerDraft('');
+    toggleMic();
+  }, [micListening, toggleMic, composerDraft, handleSend]);
 
   const handleMoodChange = useCallback((next: MoodKey) => {
     if (next === moodRef.current) return;
@@ -330,6 +381,7 @@ export default function ChatScreen() {
           text: 'Clear',
           style: 'destructive',
           onPress: () => {
+            if (micListening) toggleMic();
             (async () => {
               await clearChatHistory();
               if (!mountedRef.current) return;
@@ -337,13 +389,14 @@ export default function ChatScreen() {
               moodRef.current = 'steady';
               setMood('steady');
               setFallbackMode(false);
+              setComposerDraft('');
               setMessages([freshOpener()]);
             })();
           },
         },
       ],
     );
-  }, []);
+  }, [micListening, toggleMic]);
 
   const active = MOODS[mood];
 
@@ -360,7 +413,13 @@ export default function ChatScreen() {
               { color: usingFallback && !thinking ? palette.textMuted : active.accent },
             ]}
           >
-            {thinking ? 'thinking…' : usingFallback ? 'on autopilot' : 'listening'}
+            {thinking
+              ? 'thinking…'
+              : micListening
+                ? 'listening…'
+                : usingFallback
+                  ? 'on autopilot'
+                  : 'listening'}
           </Text>
         </View>
 
@@ -374,9 +433,14 @@ export default function ChatScreen() {
             overflow: 'hidden',
           }}
         >
-          <View style={styles.orbArea}>
-            <OrbSection mood={mood} thinking={thinking} />
-          </View>
+          <Pressable
+            style={styles.orbArea}
+            onPress={handleOrbTap}
+            accessibilityRole="button"
+            accessibilityLabel={micListening ? 'Stop voice input and send' : 'Start voice input'}
+          >
+            <OrbSection mood={mood} energized={thinking || micListening} />
+          </Pressable>
         </Animated.View>
 
         <View style={styles.toggleArea}>
@@ -408,26 +472,35 @@ export default function ChatScreen() {
         />
 
         <View style={{ paddingBottom: insets.bottom }}>
-          <Composer mood={active} onSend={handleSend} disabled={thinking || !hydrated} />
+          <Composer
+            mood={active}
+            value={composerDraft}
+            onChangeText={setComposerDraft}
+            onSend={handleSend}
+            disabled={thinking || !hydrated}
+          />
         </View>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
-/** Memoised so appending a message doesn't restart the orb's breathing loop. */
+/** Memoised so appending a message doesn't restart the orb's breathing loop.
+ * `energized` drives the same pulse for two distinct situations — Milo
+ * composing a reply, or the mic actively listening — since both read as
+ * "something dynamic is happening" on the same visual language. */
 const OrbSection = memo(function OrbSection({
   mood,
-  thinking,
+  energized,
 }: {
   mood: MoodKey;
-  thinking: boolean;
+  energized: boolean;
 }) {
-  const active = MOODS[mood];
+  const moodStyle = MOODS[mood];
   return (
     <>
-      <VoiceOrb mood={active} active={thinking} />
-      <Text style={styles.tagline}>{active.tagline}</Text>
+      <VoiceOrb mood={moodStyle} active={energized} />
+      <Text style={styles.tagline}>{moodStyle.tagline}</Text>
     </>
   );
 });

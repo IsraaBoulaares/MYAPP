@@ -1,29 +1,29 @@
-import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { palette, type Mood } from '../theme';
 
 type Props = {
   mood: Mood;
+  value: string;
+  onChangeText: (text: string) => void;
   onSend: (text: string) => void;
   disabled?: boolean;
 };
 
-export default function Composer({ mood, onSend, disabled = false }: Props) {
-  const [draft, setDraft] = useState('');
-  const canSend = draft.trim().length > 0 && !disabled;
+export default function Composer({ mood, value, onChangeText, onSend, disabled = false }: Props) {
+  const canSend = value.trim().length > 0 && !disabled;
 
   const send = () => {
     if (!canSend) return;
-    onSend(draft.trim());
-    setDraft('');
+    onSend(value.trim());
+    onChangeText('');
   };
 
   return (
     <View style={styles.wrap}>
       <TextInput
         style={styles.input}
-        value={draft}
-        onChangeText={setDraft}
+        value={value}
+        onChangeText={onChangeText}
         placeholder="Talk to Milo…"
         placeholderTextColor={palette.textMuted}
         multiline

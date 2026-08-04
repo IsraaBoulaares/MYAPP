@@ -21,6 +21,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Milo uses your microphone so you can talk instead of type.",
+          "speechRecognitionPermission": "Milo uses speech recognition to turn what you say into text."
+        }
+      ]
+    ]
   }
 }
