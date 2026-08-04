@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchNikoReply } from '../api/nikoClient';
+import { fetchMiloReply } from '../api/miloClient';
 import Composer from '../components/Composer';
 import MessageBubble from '../components/MessageBubble';
 import MoodToggle from '../components/MoodToggle';
@@ -37,7 +37,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // tagline and its spacing) — the amount of room reclaimed when it collapses.
 const ORB_COLLAPSE_HEIGHT = 260;
 
-// A manual tap wins over auto-detection for this long before Niko starts
+// A manual tap wins over auto-detection for this long before Milo starts
 // reading tone again on its own.
 const MANUAL_OVERRIDE_MS = 2 * 60 * 1000;
 
@@ -46,7 +46,7 @@ export default function ChatScreen() {
   const [mood, setMood] = useState<MoodKey>('steady');
   const [thinking, setThinking] = useState(false);
   const [messages, setMessages] = useState<Message[]>(() => [
-    { id: 'm-opener', role: 'niko', text: opener('steady'), mood: 'steady' },
+    { id: 'm-opener', role: 'milo', text: opener('steady'), mood: 'steady' },
   ]);
 
   const idRef = useRef(0);
@@ -117,12 +117,12 @@ export default function ChatScreen() {
 
   useEffect(scrollToEnd, [messages, thinking, scrollToEnd]);
 
-  const appendNikoReply = useCallback((text: string, mood: MoodKey) => {
-    setMessages((prev) => [...prev, { id: nextId(), role: 'niko', text, mood }]);
+  const appendMiloReply = useCallback((text: string, mood: MoodKey) => {
+    setMessages((prev) => [...prev, { id: nextId(), role: 'milo', text, mood }]);
   }, []);
 
   // Applies a detected mood only if the user hasn't manually overridden it
-  // recently — manual choice wins for MANUAL_OVERRIDE_MS before Niko starts
+  // recently — manual choice wins for MANUAL_OVERRIDE_MS before Milo starts
   // reading tone on its own again. 'steady' means "no emotional signal", so
   // it never triggers a shift — only genuine soft/playful detections do.
   // Updates moodRef.current synchronously (not just via the mood-state
@@ -152,12 +152,12 @@ export default function ChatScreen() {
 
     (async () => {
       try {
-        const { reply, detectedMood } = await fetchNikoReply(moodAtSend, historyForApi);
+        const { reply, detectedMood } = await fetchMiloReply(moodAtSend, historyForApi);
         if (!mountedRef.current) return;
         // Apply any mood shift first so the reply we're about to show
         // already reflects it, not the following one.
         maybeAutoShiftMood(detectedMood);
-        appendNikoReply(reply, moodRef.current);
+        appendMiloReply(reply, moodRef.current);
       } catch {
         // Gemini/Vercel unreachable — fall back to a canned reply so the
         // app still feels alive, with the same mood-dependent pacing. No
@@ -167,12 +167,12 @@ export default function ChatScreen() {
         if (!mountedRef.current) return;
         const cursor = fallbackCursor.current[current];
         fallbackCursor.current[current] = cursor + 1;
-        appendNikoReply(fallbackReply(current, cursor), current);
+        appendMiloReply(fallbackReply(current, cursor), current);
       } finally {
         if (mountedRef.current) setThinking(false);
       }
     })();
-  }, [appendNikoReply, maybeAutoShiftMood]);
+  }, [appendMiloReply, maybeAutoShiftMood]);
 
   const handleMoodChange = useCallback((next: MoodKey) => {
     if (next === moodRef.current) return;
@@ -190,7 +190,7 @@ export default function ChatScreen() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <Pressable onPress={() => Keyboard.dismiss()}>
         <View style={styles.header}>
-          <Text style={styles.wordmark}>niko</Text>
+          <Text style={styles.wordmark}>milo</Text>
           <Text style={[styles.status, { color: active.accent }]}>
             {thinking ? 'thinking…' : 'listening'}
           </Text>

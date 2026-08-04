@@ -4,7 +4,7 @@ import { MOODS, MOOD_ORDER, palette, type Mood } from '../theme';
 
 type Props = {
   mood: Mood;
-  /** True while Niko is "thinking" — the orb leans in and breathes harder. */
+  /** True while Milo is "thinking" — the orb leans in and breathes harder. */
   active?: boolean;
 };
 

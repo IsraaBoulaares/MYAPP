@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ApiError, GoogleGenAI, Type, type GenerateContentParameters } from '@google/genai';
 
 type MoodKey = 'steady' | 'soft' | 'playful';
-type ChatRole = 'user' | 'niko';
+type ChatRole = 'user' | 'milo';
 type ChatMessage = { role: ChatRole; text: string };
 
 const MOOD_KEYS: MoodKey[] = ['steady', 'soft', 'playful'];
@@ -12,7 +12,7 @@ const MODEL = 'gemini-flash-latest';
 // Keeps token usage bounded on very long conversations.
 const MAX_HISTORY = 20;
 
-const SYSTEM_PROMPT_TEMPLATE = `You are Niko, a warm and perceptive personal companion. Speak like a
+const SYSTEM_PROMPT_TEMPLATE = `You are Milo, a warm and perceptive personal companion. Speak like a
 close friend who pays attention — not customer support, not a hype
 machine. CRITICAL: Before responding, first classify the CURRENT
 message on its own — ignoring the emotional tone of prior messages —
@@ -61,7 +61,7 @@ const RESPONSE_SCHEMA = {
   properties: {
     reply: {
       type: Type.STRING,
-      description: "Niko's reply to the user, following all persona and tone rules above.",
+      description: "Milo's reply to the user, following all persona and tone rules above.",
     },
     detectedMood: {
       type: Type.STRING,
@@ -110,7 +110,7 @@ function isMoodKey(value: unknown): value is MoodKey {
 function isChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return (v.role === 'user' || v.role === 'niko') && typeof v.text === 'string';
+  return (v.role === 'user' || v.role === 'milo') && typeof v.text === 'string';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -144,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const ai = getClient();
     const contents = history.map((m) => ({
-      role: m.role === 'niko' ? 'model' : 'user',
+      role: m.role === 'milo' ? 'model' : 'user',
       parts: [{ text: m.text }],
     }));
 
@@ -173,7 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.status(200).json({ reply, detectedMood });
   } catch (err) {
-    console.error('Niko chat error:', err);
+    console.error('Milo chat error:', err);
     res.status(502).json({ error: 'Failed to reach Gemini' });
   }
 }

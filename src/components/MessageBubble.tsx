@@ -35,7 +35,7 @@ export default function MessageBubble({ message }: { message: Message }) {
 
   return (
     <Animated.View
-      style={[styles.row, isUser ? styles.rowUser : styles.rowNiko, animated]}
+      style={[styles.row, isUser ? styles.rowUser : styles.rowMilo, animated]}
     >
       {!isUser && <View style={[styles.pip, { backgroundColor: mood.accent }]} />}
       <View
@@ -46,7 +46,7 @@ export default function MessageBubble({ message }: { message: Message }) {
             : { backgroundColor: mood.bubble, borderColor: `${mood.accent}44` },
         ]}
       >
-        <Text style={[styles.text, !isUser && styles.nikoText]}>{message.text}</Text>
+        <Text style={[styles.text, !isUser && styles.miloText]}>{message.text}</Text>
       </View>
     </Animated.View>
   );
@@ -60,7 +60,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   rowUser: { justifyContent: 'flex-end' },
-  rowNiko: { justifyContent: 'flex-start' },
+  rowMilo: { justifyContent: 'flex-start' },
   pip: {
     width: 7,
     height: 7,
@@ -85,8 +85,8 @@ const styles = StyleSheet.create({
     fontSize: 15.5,
     lineHeight: 22,
   },
-  nikoText: {
-    // Niko's own words sit a touch softer than the user's.
+  miloText: {
+    // Milo's own words sit a touch softer than the user's.
     color: '#DDE1EE',
   },
   systemRow: {

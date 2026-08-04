@@ -4,9 +4,9 @@ import type { Message } from '../types';
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL;
 const REQUEST_TIMEOUT_MS = 15000;
 
-export class NikoApiError extends Error {}
+export class MiloApiError extends Error {}
 
-export type NikoReply = {
+export type MiloReply = {
   reply: string;
   /** Gemini's read on the tone of the user's latest message, or null if
    * missing/malformed — callers should treat that as "no signal". */
@@ -18,13 +18,13 @@ function isMoodKey(value: unknown): value is MoodKey {
 }
 
 /**
- * Calls the deployed /api/chat function. Throws NikoApiError on anything
+ * Calls the deployed /api/chat function. Throws MiloApiError on anything
  * that should fall back to canned replies: missing config, timeout, network
  * failure, non-2xx response, or a malformed body.
  */
-export async function fetchNikoReply(mood: MoodKey, history: Message[]): Promise<NikoReply> {
+export async function fetchMiloReply(mood: MoodKey, history: Message[]): Promise<MiloReply> {
   if (!API_BASE_URL) {
-    throw new NikoApiError('EXPO_PUBLIC_API_URL is not configured');
+    throw new MiloApiError('EXPO_PUBLIC_API_URL is not configured');
   }
 
   const controller = new AbortController();
@@ -46,20 +46,20 @@ export async function fetchNikoReply(mood: MoodKey, history: Message[]): Promise
     });
 
     if (!response.ok) {
-      throw new NikoApiError(`Niko API responded with ${response.status}`);
+      throw new MiloApiError(`Milo API responded with ${response.status}`);
     }
 
     const data = (await response.json()) as { reply?: unknown; detectedMood?: unknown };
     if (typeof data.reply !== 'string' || !data.reply.trim()) {
-      throw new NikoApiError('Niko API returned an empty reply');
+      throw new MiloApiError('Milo API returned an empty reply');
     }
     return {
       reply: data.reply,
       detectedMood: isMoodKey(data.detectedMood) ? data.detectedMood : null,
     };
   } catch (err) {
-    if (err instanceof NikoApiError) throw err;
-    throw new NikoApiError(err instanceof Error ? err.message : 'Niko API request failed');
+    if (err instanceof MiloApiError) throw err;
+    throw new MiloApiError(err instanceof Error ? err.message : 'Milo API request failed');
   } finally {
     clearTimeout(timeout);
   }

@@ -30,12 +30,12 @@ const REPLIES: Record<MoodKey, string[]> = {
 };
 
 const OPENERS: Record<MoodKey, string> = {
-  steady: "Hey. I'm Niko. Whatever's on your mind, I'm listening.",
-  soft: "Hi. I'm Niko. There's no agenda here — start wherever you like.",
-  playful: "Hi hi! I'm Niko. What are we getting into today?",
+  steady: "Hey. I'm Milo. Whatever's on your mind, I'm listening.",
+  soft: "Hi. I'm Milo. There's no agenda here — start wherever you like.",
+  playful: "Hi hi! I'm Milo. What are we getting into today?",
 };
 
-/** Niko's line when the user switches moods mid-conversation. */
+/** Milo's line when the user switches moods mid-conversation. */
 const MOOD_SHIFTS: Record<MoodKey, string> = {
   steady: 'Alright — settling in. Steady it is.',
   soft: 'Softening up. Take your time.',

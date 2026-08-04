@@ -6,7 +6,7 @@ const DOTS = [0, 1, 2];
 const STAGGER = 160;
 const BEAT = 460;
 
-/** Three dots rippling in sequence while Niko composes a reply. */
+/** Three dots rippling in sequence while Milo composes a reply. */
 export default function TypingIndicator({ mood }: { mood: Mood }) {
   const dots = useRef(DOTS.map(() => new Animated.Value(0))).current;
 

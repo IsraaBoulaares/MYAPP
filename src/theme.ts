@@ -1,5 +1,5 @@
 /**
- * Niko's visual language.
+ * Milo's visual language.
  *
  * Everything mood-dependent lives in MOODS so a mood switch is a single
  * lookup — the orb, the accents and the reply cadence all read from here.
@@ -24,7 +24,7 @@ export type Mood = {
   accent: string;
   /** Translucent halo layered around the orb. */
   halo: string;
-  /** Tint behind Niko's message bubbles. */
+  /** Tint behind Milo's message bubbles. */
   bubble: string;
   /** One full breath of the orb, in ms. Slower = calmer. */
   breathMs: number;

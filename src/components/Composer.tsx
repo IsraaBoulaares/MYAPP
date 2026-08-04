@@ -24,14 +24,14 @@ export default function Composer({ mood, onSend, disabled = false }: Props) {
         style={styles.input}
         value={draft}
         onChangeText={setDraft}
-        placeholder="Talk to Niko…"
+        placeholder="Talk to Milo…"
         placeholderTextColor={palette.textMuted}
         multiline
         maxLength={500}
         onSubmitEditing={send}
         blurOnSubmit={false}
         returnKeyType="send"
-        accessibilityLabel="Message Niko"
+        accessibilityLabel="Message Milo"
       />
       <Pressable
         onPress={send}
