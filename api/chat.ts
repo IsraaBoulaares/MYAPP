@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { GoogleGenAI, Type } from '@google/genai';
+import { ApiError, GoogleGenAI, Type, type GenerateContentParameters } from '@google/genai';
 
 type MoodKey = 'steady' | 'soft' | 'playful';
 type ChatRole = 'user' | 'niko';
@@ -69,6 +69,23 @@ function getClient(): GoogleGenAI {
   return client;
 }
 
+const TRANSIENT_RETRY_DELAY_MS = 1000;
+
+// Gemini occasionally 503s under load ("try again later") — a single quick
+// retry clears most of these without making genuinely broken requests
+// (bad key, retired model, etc.) wait around before failing.
+async function generateContentWithRetry(ai: GoogleGenAI, params: GenerateContentParameters) {
+  try {
+    return await ai.models.generateContent(params);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) {
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
+      return ai.models.generateContent(params);
+    }
+    throw err;
+  }
+}
+
 function isMoodKey(value: unknown): value is MoodKey {
   return typeof value === 'string' && (MOOD_KEYS as string[]).includes(value);
 }
@@ -114,7 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parts: [{ text: m.text }],
     }));
 
-    const response = await ai.models.generateContent({
+    const response = await generateContentWithRetry(ai, {
       model: MODEL,
       contents,
       config: {
