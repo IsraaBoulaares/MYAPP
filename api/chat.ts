@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ApiError, GoogleGenAI, Type, type GenerateContentParameters } from '@google/genai';
+import { ApiError, GoogleGenAI, type GenerateContentParameters } from '@google/genai';
 
 type MoodKey = 'steady' | 'soft' | 'playful';
 type ChatRole = 'user' | 'milo';
@@ -12,6 +12,11 @@ const MODEL = 'gemini-flash-latest';
 // Keeps token usage bounded on very long conversations.
 const MAX_HISTORY = 20;
 
+// Plain text (not JSON-schema structured output) so the reply can stream
+// naturally token by token. The mood classification instead rides along as
+// a sentinel-marked final line, which the server strips before forwarding
+// text to the client (see MARKER_REGEX below) — this keeps everything to a
+// single Gemini call instead of a second classification request.
 const SYSTEM_PROMPT_TEMPLATE = `You are Milo, a warm and perceptive personal companion. Speak like a
 close friend who pays attention — not customer support, not a hype
 machine. CRITICAL: Before responding, first classify the CURRENT
@@ -31,9 +36,13 @@ phrasing. Current mood setting: {mood} — let this subtly shape your
 tone (steady = grounded and even, soft = gentle and unhurried,
 playful = light and quick).
 
-Alongside your reply, also classify the emotional tone of the user's
-CURRENT message ONLY — not the conversation history — as one of
-steady, soft, or playful. Judge the SITUATION being described, not
+After writing your reply, on its own final line output exactly one of:
+<<<MOOD:steady>>>
+<<<MOOD:soft>>>
+<<<MOOD:playful>>>
+reflecting the emotional tone of the user's CURRENT message ONLY — not
+the conversation history, and not your own reply's tone. Output
+nothing after this marker. Judge the SITUATION being described, not
 just explicit emotion words — a rejection, loss, or setback is soft
 even if stated factually with no feeling-words attached; an
 engagement, achievement, or celebration is playful even if stated
@@ -54,23 +63,13 @@ briefly.
   and small complaints like "ugh, traffic was bad". steady is also
   the default when tone is genuinely unclear.
 This classification is independent of the mood setting above and
-should reflect only what this message conveys.`;
+should reflect only what the user's message conveys.`;
 
-const RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    reply: {
-      type: Type.STRING,
-      description: "Milo's reply to the user, following all persona and tone rules above.",
-    },
-    detectedMood: {
-      type: Type.STRING,
-      enum: MOOD_KEYS,
-      description: "Emotional tone of the user's current message only, per the classification rule above.",
-    },
-  },
-  required: ['reply', 'detectedMood'],
-};
+// Generous upper bound on "\n<<<MOOD:playful>>>" plus stray whitespace —
+// the server always holds back at least this many trailing characters from
+// the client so the marker itself is never sent as visible reply text.
+const MARKER_HOLDBACK = 32;
+const MARKER_REGEX = /<<<MOOD:(steady|soft|playful)>>>\s*$/;
 
 // Lazily constructed so a missing key surfaces as a normal request error,
 // not a crash at module load / cold start.
@@ -88,16 +87,17 @@ function getClient(): GoogleGenAI {
 
 const TRANSIENT_RETRY_DELAY_MS = 1000;
 
-// Gemini occasionally 503s under load ("try again later") — a single quick
-// retry clears most of these without making genuinely broken requests
-// (bad key, retired model, etc.) wait around before failing.
-async function generateContentWithRetry(ai: GoogleGenAI, params: GenerateContentParameters) {
+// Gemini occasionally 503s under load ("try again later"). Only worth
+// retrying before any chunk has been sent — once we're mid-stream there's
+// no clean way to restart without a garbled partial message, so a
+// mid-stream failure is instead reported to the client as an 'error' event.
+async function startStreamWithRetry(ai: GoogleGenAI, params: GenerateContentParameters) {
   try {
-    return await ai.models.generateContent(params);
+    return await ai.models.generateContentStream(params);
   } catch (err) {
     if (err instanceof ApiError && err.status === 503) {
       await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS));
-      return ai.models.generateContent(params);
+      return ai.models.generateContentStream(params);
     }
     throw err;
   }
@@ -111,6 +111,10 @@ function isChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return (v.role === 'user' || v.role === 'milo') && typeof v.text === 'string';
+}
+
+function writeEvent(res: VercelResponse, event: Record<string, unknown>) {
+  res.write(`${JSON.stringify(event)}\n`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -148,37 +152,67 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parts: [{ text: m.text }],
     }));
 
-    const response = await generateContentWithRetry(ai, {
+    const stream = await startStreamWithRetry(ai, {
       model: MODEL,
       contents,
       config: {
         systemInstruction: SYSTEM_PROMPT_TEMPLATE.replace('{mood}', mood),
-        responseMimeType: 'application/json',
-        responseSchema: RESPONSE_SCHEMA,
       },
     });
 
-    const raw = response.text?.trim();
-    if (!raw) {
-      throw new Error('Gemini returned an empty response');
+    // Headers are committed here — anything that goes wrong from this point
+    // on has to be reported as an in-band 'error' event, not a fresh HTTP
+    // status, since the response has already started.
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      // Disables buffering on Vercel's edge/proxy layer so chunks actually
+      // reach the client as they're written, not batched at the end.
+      'X-Accel-Buffering': 'no',
+    });
+
+    let fullText = '';
+    let sentLength = 0;
+
+    try {
+      for await (const chunk of stream) {
+        fullText += chunk.text ?? '';
+        const safeBoundary = Math.max(sentLength, fullText.length - MARKER_HOLDBACK);
+        if (safeBoundary > sentLength) {
+          writeEvent(res, { type: 'delta', text: fullText.slice(sentLength, safeBoundary) });
+          sentLength = safeBoundary;
+        }
+      }
+    } catch (streamErr) {
+      console.error('Milo stream error (mid-stream):', streamErr);
+      writeEvent(res, { type: 'error', message: 'stream interrupted' });
+      res.end();
+      return;
     }
 
-    const parsed = JSON.parse(raw) as { reply?: unknown; detectedMood?: unknown };
-    const reply = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
-    if (!reply) {
-      throw new Error('Gemini returned an empty reply');
-    }
-    // Not fatal if missing/malformed — the client just skips auto mood-shift.
-    const detectedMood = isMoodKey(parsed.detectedMood) ? parsed.detectedMood : null;
+    const match = fullText.match(MARKER_REGEX);
+    const detectedMood = match ? (match[1] as MoodKey) : null;
+    const replyText = (match ? fullText.slice(0, match.index) : fullText).trimEnd();
 
-    res.status(200).json({ reply, detectedMood });
+    if (replyText.length > sentLength) {
+      writeEvent(res, { type: 'delta', text: replyText.slice(sentLength) });
+    }
+
+    if (!replyText) {
+      writeEvent(res, { type: 'error', message: 'Gemini returned an empty reply' });
+    } else {
+      writeEvent(res, { type: 'done', detectedMood });
+    }
+    res.end();
   } catch (err) {
     console.error('Milo chat error:', err);
-    // Surface Gemini's own HTTP status (e.g. 429 quota, 404 retired model)
-    // so the client can tell a capacity/config issue apart from a real bug
-    // without exposing the full internal error text.
     const upstreamStatus = err instanceof ApiError ? err.status : null;
-    res.status(502).json({ error: 'Failed to reach Gemini', upstreamStatus });
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Failed to reach Gemini', upstreamStatus });
+    } else {
+      writeEvent(res, { type: 'error', message: 'stream failed' });
+      res.end();
+    }
   }
 }
 

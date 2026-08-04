@@ -42,6 +42,20 @@ const MOOD_SHIFTS: Record<MoodKey, string> = {
   playful: "Ooh, mood shift. I'm awake now.",
 };
 
+/** Shown once when a true network failure (not just an API/quota issue)
+ * is first detected — a single acknowledgment rather than pretending to
+ * respond to what was actually said, since nothing reached the server. */
+export const NETWORK_TROUBLE_LINE =
+  'Having trouble reaching you right now — still here though.';
+
+/** Appended to a reply that had already started streaming in before the
+ * connection dropped, instead of splicing an unrelated canned line onto a
+ * truncated real sentence. */
+export const INTERRUPTION_SUFFIX = '\n\n(lost the connection there — still here)';
+
+/** The rare case where even the offline fallback path itself breaks. */
+export const GLITCH_LINE = "Something in me just glitched — give me a second and try again?";
+
 export function opener(mood: MoodKey): string {
   return OPENERS[mood];
 }

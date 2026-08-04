@@ -2,15 +2,26 @@ import { MOOD_ORDER, type MoodKey } from '../theme';
 import type { Message } from '../types';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL;
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 20000;
 
-export class MiloApiError extends Error {}
+/** 'network' = request never reached/heard back from the server at all —
+ * caller should treat this differently from a real (if unhappy) response.
+ * 'api' = server responded, but with a failure (bad status, quota, empty
+ * reply, mid-stream interruption). */
+export type MiloFailureKind = 'network' | 'api';
 
-export type MiloReply = {
-  reply: string;
-  /** Gemini's read on the tone of the user's latest message, or null if
-   * missing/malformed — callers should treat that as "no signal". */
-  detectedMood: MoodKey | null;
+export class MiloApiError extends Error {
+  kind: MiloFailureKind;
+  constructor(message: string, kind: MiloFailureKind = 'api') {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+export type MiloStreamHandlers = {
+  onDelta: (deltaText: string) => void;
+  onDone: (detectedMood: MoodKey | null) => void;
+  onError: (error: MiloApiError) => void;
 };
 
 function isMoodKey(value: unknown): value is MoodKey {
@@ -18,62 +29,110 @@ function isMoodKey(value: unknown): value is MoodKey {
 }
 
 /**
- * Calls the deployed /api/chat function. Throws MiloApiError on anything
- * that should fall back to canned replies: missing config, timeout, network
- * failure, non-2xx response, or a malformed body.
+ * Streams a reply from /api/chat, invoking handlers as NDJSON events arrive
+ * (one JSON object per line: {type:'delta'|'done'|'error', ...}). Uses
+ * XMLHttpRequest rather than fetch — React Native's fetch does not reliably
+ * expose a readable stream for the response body across RN/Hermes versions,
+ * while XHR's progressive `responseText` + `onprogress` is the established,
+ * reliable way to consume a streaming HTTP response in RN.
+ *
+ * Returns a cancel function (aborts the in-flight request; safe to call
+ * after the stream has already finished).
  */
-export async function fetchMiloReply(mood: MoodKey, history: Message[]): Promise<MiloReply> {
+export function streamMiloReply(
+  mood: MoodKey,
+  history: Message[],
+  handlers: MiloStreamHandlers,
+): () => void {
   if (!API_BASE_URL) {
-    throw new MiloApiError('EXPO_PUBLIC_API_URL is not configured');
+    handlers.onError(new MiloApiError('EXPO_PUBLIC_API_URL is not configured', 'api'));
+    return () => {};
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const xhr = new XMLHttpRequest();
+  let processedLength = 0;
+  let lineBuffer = '';
+  let settled = false;
 
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mood,
-        // System lines (mood-shift notices) are UI-only, not conversation
-        // content the model should see.
-        messages: history
-          .filter((m) => m.role !== 'system')
-          .map((m) => ({ role: m.role, text: m.text })),
-      }),
-      signal: controller.signal,
-    });
+  const finish = (fn: () => void) => {
+    if (settled) return;
+    settled = true;
+    fn();
+  };
 
-    if (!response.ok) {
-      // Best-effort read of the upstream status the server attached (e.g.
-      // 429 quota, 404 retired model) so callers can log a real cause
-      // instead of a bare "502" that looks like a generic outage.
-      let upstreamStatus: number | null = null;
+  const processNewText = () => {
+    const text: string = xhr.responseText ?? '';
+    if (text.length <= processedLength) return;
+    const newText = text.slice(processedLength);
+    processedLength = text.length;
+
+    lineBuffer += newText;
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (settled) return;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let event: { type?: unknown; text?: unknown; detectedMood?: unknown; message?: unknown };
       try {
-        const errBody = (await response.json()) as { upstreamStatus?: unknown };
-        if (typeof errBody.upstreamStatus === 'number') upstreamStatus = errBody.upstreamStatus;
+        event = JSON.parse(trimmed);
       } catch {
-        // Non-JSON or empty error body — fall through with just response.status.
+        continue; // Skip a malformed line rather than failing the whole stream.
       }
-      throw new MiloApiError(
-        `Milo API responded with ${response.status}` +
-          (upstreamStatus ? ` (Gemini ${upstreamStatus})` : ''),
+
+      if (event.type === 'delta' && typeof event.text === 'string') {
+        handlers.onDelta(event.text);
+      } else if (event.type === 'done') {
+        finish(() => handlers.onDone(isMoodKey(event.detectedMood) ? event.detectedMood : null));
+      } else if (event.type === 'error') {
+        finish(() =>
+          handlers.onError(
+            new MiloApiError(typeof event.message === 'string' ? event.message : 'Stream error', 'api'),
+          ),
+        );
+      }
+    }
+  };
+
+  xhr.onprogress = processNewText;
+  xhr.onload = () => {
+    processNewText();
+    if (settled) return;
+    // Connection closed without a 'done' or 'error' event ever arriving —
+    // whatever text streamed in (if any) is incomplete, so treat it as a
+    // failure rather than silently leaving a half-finished bubble.
+    if (xhr.status >= 200 && xhr.status < 300) {
+      finish(() => handlers.onError(new MiloApiError('Stream ended unexpectedly', 'api')));
+    } else {
+      finish(() =>
+        handlers.onError(new MiloApiError(`Milo API responded with ${xhr.status}`, 'api')),
       );
     }
+  };
+  xhr.onerror = () => finish(() => handlers.onError(new MiloApiError('Network error', 'network')));
+  xhr.ontimeout = () =>
+    finish(() => handlers.onError(new MiloApiError('Milo API request timed out', 'network')));
+  xhr.timeout = REQUEST_TIMEOUT_MS;
 
-    const data = (await response.json()) as { reply?: unknown; detectedMood?: unknown };
-    if (typeof data.reply !== 'string' || !data.reply.trim()) {
-      throw new MiloApiError('Milo API returned an empty reply');
+  xhr.open('POST', `${API_BASE_URL}/api/chat`);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.send(
+    JSON.stringify({
+      mood,
+      // System lines (mood-shift notices) are UI-only, not conversation
+      // content the model should see.
+      messages: history
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({ role: m.role, text: m.text })),
+    }),
+  );
+
+  return () => {
+    if (!settled) {
+      settled = true;
+      xhr.abort();
     }
-    return {
-      reply: data.reply,
-      detectedMood: isMoodKey(data.detectedMood) ? data.detectedMood : null,
-    };
-  } catch (err) {
-    if (err instanceof MiloApiError) throw err;
-    throw new MiloApiError(err instanceof Error ? err.message : 'Milo API request failed');
-  } finally {
-    clearTimeout(timeout);
-  }
+  };
 }

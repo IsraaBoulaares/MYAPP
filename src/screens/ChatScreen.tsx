@@ -13,13 +13,20 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fetchMiloReply } from '../api/miloClient';
+import { streamMiloReply, type MiloFailureKind } from '../api/miloClient';
 import Composer from '../components/Composer';
 import MessageBubble from '../components/MessageBubble';
 import MoodToggle from '../components/MoodToggle';
 import TypingIndicator from '../components/TypingIndicator';
 import VoiceOrb from '../components/VoiceOrb';
-import { fallbackReply, moodShiftLine, opener } from '../data/cannedReplies';
+import {
+  fallbackReply,
+  GLITCH_LINE,
+  INTERRUPTION_SUFFIX,
+  moodShiftLine,
+  NETWORK_TROUBLE_LINE,
+  opener,
+} from '../data/cannedReplies';
 import { clearChatHistory, loadChatHistory, saveChatHistory } from '../storage/chatHistory';
 import { MOODS, palette, type MoodKey } from '../theme';
 import type { Message } from '../types';
@@ -93,10 +100,25 @@ export default function ChatScreen() {
   // Bumped on every auto-detected shift so MoodToggle can play its pulse cue.
   const [autoShiftPulseKey, setAutoShiftPulseKey] = useState(0);
 
+  // True while replies are coming from the offline canned fallback instead
+  // of a real Gemini stream — drives the subtle "on autopilot" status label.
+  // Mirrored in a ref so async handlers can read the live value without a
+  // stale closure.
+  const [usingFallback, setUsingFallback] = useState(false);
+  const usingFallbackRef = useRef(false);
+  const setFallbackMode = (value: boolean) => {
+    usingFallbackRef.current = value;
+    setUsingFallback(value);
+  };
+
   const mountedRef = useRef(true);
+  // Cancels whatever stream is currently in flight — called on unmount so a
+  // response arriving after the screen is gone can't touch dead state.
+  const streamCancelRef = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
       mountedRef.current = false;
+      streamCancelRef.current?.();
     },
     [],
   );
@@ -187,46 +209,106 @@ export default function ChatScreen() {
     setAutoShiftPulseKey((k) => k + 1);
   }, []);
 
-  const handleSend = useCallback((text: string) => {
-    const moodAtSend = moodRef.current;
-    const userMessage: Message = { id: nextId(), role: 'user', text, mood: moodAtSend };
-    const historyForApi = [...messagesRef.current, userMessage];
+  const appendInterruptionNote = useCallback((replyId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === replyId ? { ...m, text: `${m.text}${INTERRUPTION_SUFFIX}` } : m)),
+    );
+  }, []);
 
-    setMessages((prev) => [...prev, userMessage]);
-    setThinking(true);
+  const handleSend = useCallback(
+    (text: string) => {
+      const moodAtSend = moodRef.current;
+      const userMessage: Message = { id: nextId(), role: 'user', text, mood: moodAtSend };
+      // The user's own message is appended immediately, before anything
+      // that could fail — whatever happens to the reply, what they typed
+      // stays visible in the thread rather than being lost.
+      const historyForApi = [...messagesRef.current, userMessage];
+      setMessages((prev) => [...prev, userMessage]);
+      setThinking(true);
 
-    (async () => {
-      try {
-        const { reply, detectedMood } = await fetchMiloReply(moodAtSend, historyForApi);
-        if (!mountedRef.current) return;
-        // Apply any mood shift first so the reply we're about to show
-        // already reflects it, not the following one.
-        maybeAutoShiftMood(detectedMood);
-        appendMiloReply(reply, moodRef.current);
-      } catch (err) {
-        // Dev-only — never rendered in the UI, just visible in the Metro
-        // console — so a real bug and a Gemini quota/outage blip aren't
-        // both silently indistinguishable behind "it fell back to canned".
-        if (__DEV__) {
-          console.log(
-            '[Milo] fetchMiloReply failed, falling back to canned reply:',
-            err instanceof Error ? err.message : err,
-          );
+      const replyId = nextId();
+      let replyStarted = false;
+
+      // Runs the offline degrade path for a failed reply. `kind` decides
+      // the wording (a real network failure gets a one-time "having
+      // trouble reaching you" line; an API/quota failure — or a repeat
+      // network failure once already in fallback mode — just cycles the
+      // normal mood-flavoured canned replies). If a partial reply had
+      // already streamed in, it's marked as interrupted rather than
+      // having an unrelated canned line spliced onto a truncated sentence.
+      const fallBack = async (kind: MiloFailureKind) => {
+        try {
+          const wasAlreadyFallback = usingFallbackRef.current;
+          setFallbackMode(true);
+          const current = moodRef.current;
+          await wait(THINK_MS[current]);
+          if (!mountedRef.current) return;
+
+          if (replyStarted) {
+            appendInterruptionNote(replyId);
+          } else if (kind === 'network' && !wasAlreadyFallback) {
+            appendMiloReply(NETWORK_TROUBLE_LINE, current);
+          } else {
+            const cursor = fallbackCursor.current[current];
+            fallbackCursor.current[current] = cursor + 1;
+            appendMiloReply(fallbackReply(current, cursor), current);
+          }
+        } catch (fallbackErr) {
+          // Tier 3 — even the offline fallback path broke. Rare (it's pure
+          // local logic with no I/O besides AsyncStorage), but don't let it
+          // leave the thread hanging with no acknowledgment at all.
+          if (__DEV__) console.log('[Milo] fallback path itself failed:', fallbackErr);
+          if (!mountedRef.current) return;
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), role: 'system', text: GLITCH_LINE, mood: moodRef.current },
+          ]);
+        } finally {
+          if (mountedRef.current) setThinking(false);
         }
-        // Gemini/Vercel unreachable — fall back to a canned reply so the
-        // app still feels alive, with the same mood-dependent pacing. No
-        // classification is available offline, so mood doesn't auto-shift.
-        const current = moodRef.current;
-        await wait(THINK_MS[current]);
-        if (!mountedRef.current) return;
-        const cursor = fallbackCursor.current[current];
-        fallbackCursor.current[current] = cursor + 1;
-        appendMiloReply(fallbackReply(current, cursor), current);
-      } finally {
-        if (mountedRef.current) setThinking(false);
-      }
-    })();
-  }, [appendMiloReply, maybeAutoShiftMood]);
+      };
+
+      streamCancelRef.current = streamMiloReply(moodAtSend, historyForApi, {
+        onDelta: (delta) => {
+          if (!mountedRef.current) return;
+          if (!replyStarted) {
+            replyStarted = true;
+            setThinking(false);
+            setMessages((prev) => [
+              ...prev,
+              { id: replyId, role: 'milo', text: delta, mood: moodRef.current },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === replyId ? { ...m, text: m.text + delta } : m)),
+            );
+          }
+        },
+        onDone: (detectedMood) => {
+          if (!mountedRef.current) return;
+          setThinking(false);
+          if (!replyStarted) {
+            // Stream completed but produced no visible text — treat like
+            // any other failure rather than leaving nothing on screen.
+            fallBack('api');
+            return;
+          }
+          setFallbackMode(false);
+          // Apply any mood shift after the reply that's already showing —
+          // it was composed under the mood active when it was sent.
+          maybeAutoShiftMood(detectedMood);
+        },
+        onError: (err) => {
+          if (!mountedRef.current) return;
+          if (__DEV__) {
+            console.log('[Milo] stream failed, falling back:', err.kind, err.message);
+          }
+          fallBack(err.kind);
+        },
+      });
+    },
+    [appendMiloReply, appendInterruptionNote, maybeAutoShiftMood],
+  );
 
   const handleMoodChange = useCallback((next: MoodKey) => {
     if (next === moodRef.current) return;
@@ -254,6 +336,7 @@ export default function ChatScreen() {
               lastManualChangeRef.current = 0;
               moodRef.current = 'steady';
               setMood('steady');
+              setFallbackMode(false);
               setMessages([freshOpener()]);
             })();
           },
@@ -271,8 +354,13 @@ export default function ChatScreen() {
           <Pressable onPress={() => Keyboard.dismiss()} onLongPress={handleClearHistory}>
             <Text style={styles.wordmark}>milo</Text>
           </Pressable>
-          <Text style={[styles.status, { color: active.accent }]}>
-            {thinking ? 'thinking…' : 'listening'}
+          <Text
+            style={[
+              styles.status,
+              { color: usingFallback && !thinking ? palette.textMuted : active.accent },
+            ]}
+          >
+            {thinking ? 'thinking…' : usingFallback ? 'on autopilot' : 'listening'}
           </Text>
         </View>
 
