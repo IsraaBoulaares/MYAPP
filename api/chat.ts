@@ -174,7 +174,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({ reply, detectedMood });
   } catch (err) {
     console.error('Milo chat error:', err);
-    res.status(502).json({ error: 'Failed to reach Gemini' });
+    // TEMP DEBUG: surfacing real error detail to diagnose a 502 regression.
+    res.status(502).json({
+      error: 'Failed to reach Gemini',
+      debug: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
