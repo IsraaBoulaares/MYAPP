@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 type MoodKey = 'steady' | 'soft' | 'playful';
 type ChatRole = 'user' | 'niko';
@@ -29,7 +29,31 @@ feel — reflect what they've said, don't invent more. Offer help as
 a concrete next step, not a lecture. Avoid corporate or robotic
 phrasing. Current mood setting: {mood} — let this subtly shape your
 tone (steady = grounded and even, soft = gentle and unhurried,
-playful = light and quick).`;
+playful = light and quick).
+
+Alongside your reply, also classify the emotional tone of the user's
+CURRENT message ONLY — not the conversation history — as one of
+steady, soft, or playful: soft = the message expresses sadness,
+stress, tiredness, or difficulty; playful = the message is upbeat,
+excited, or joking; steady = the message is neutral, practical, or its
+tone is unclear. This classification is independent of the mood
+setting above and should reflect only what this message conveys.`;
+
+const RESPONSE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    reply: {
+      type: Type.STRING,
+      description: "Niko's reply to the user, following all persona and tone rules above.",
+    },
+    detectedMood: {
+      type: Type.STRING,
+      enum: MOOD_KEYS,
+      description: "Emotional tone of the user's current message only, per the classification rule above.",
+    },
+  },
+  required: ['reply', 'detectedMood'],
+};
 
 // Lazily constructed so a missing key surfaces as a normal request error,
 // not a crash at module load / cold start.
@@ -95,15 +119,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contents,
       config: {
         systemInstruction: SYSTEM_PROMPT_TEMPLATE.replace('{mood}', mood),
+        responseMimeType: 'application/json',
+        responseSchema: RESPONSE_SCHEMA,
       },
     });
 
-    const reply = response.text?.trim();
-    if (!reply) {
+    const raw = response.text?.trim();
+    if (!raw) {
       throw new Error('Gemini returned an empty response');
     }
 
-    res.status(200).json({ reply });
+    const parsed = JSON.parse(raw) as { reply?: unknown; detectedMood?: unknown };
+    const reply = typeof parsed.reply === 'string' ? parsed.reply.trim() : '';
+    if (!reply) {
+      throw new Error('Gemini returned an empty reply');
+    }
+    // Not fatal if missing/malformed — the client just skips auto mood-shift.
+    const detectedMood = isMoodKey(parsed.detectedMood) ? parsed.detectedMood : null;
+
+    res.status(200).json({ reply, detectedMood });
   } catch (err) {
     console.error('Niko chat error:', err);
     res.status(502).json({ error: 'Failed to reach Gemini' });

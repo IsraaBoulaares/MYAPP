@@ -37,6 +37,10 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // tagline and its spacing) — the amount of room reclaimed when it collapses.
 const ORB_COLLAPSE_HEIGHT = 260;
 
+// A manual tap wins over auto-detection for this long before Niko starts
+// reading tone again on its own.
+const MANUAL_OVERRIDE_MS = 2 * 60 * 1000;
+
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const [mood, setMood] = useState<MoodKey>('steady');
@@ -65,6 +69,13 @@ export default function ChatScreen() {
   // Per-mood cursor for the offline fallback, scoped to this conversation
   // instance instead of living at module scope.
   const fallbackCursor = useRef<Record<MoodKey, number>>({ steady: 0, soft: 0, playful: 0 });
+
+  // When the user last tapped the mood toggle directly. Starts at 0 (the
+  // epoch) so auto-detection is active from the very first message, before
+  // any manual choice has been made.
+  const lastManualChangeRef = useRef<number>(0);
+  // Bumped on every auto-detected shift so MoodToggle can play its pulse cue.
+  const [autoShiftPulseKey, setAutoShiftPulseKey] = useState(0);
 
   const mountedRef = useRef(true);
   useEffect(
@@ -110,6 +121,22 @@ export default function ChatScreen() {
     setMessages((prev) => [...prev, { id: nextId(), role: 'niko', text, mood }]);
   }, []);
 
+  // Applies a detected mood only if the user hasn't manually overridden it
+  // recently — manual choice wins for MANUAL_OVERRIDE_MS before Niko starts
+  // reading tone on its own again.
+  const maybeAutoShiftMood = useCallback((detected: MoodKey | null) => {
+    if (!detected || detected === moodRef.current) return;
+    const sinceManualChange = Date.now() - lastManualChangeRef.current;
+    if (sinceManualChange < MANUAL_OVERRIDE_MS) return;
+
+    setMood(detected);
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: 'system', text: moodShiftLine(detected), mood: detected },
+    ]);
+    setAutoShiftPulseKey((k) => k + 1);
+  }, []);
+
   const handleSend = useCallback((text: string) => {
     const moodAtSend = moodRef.current;
     const userMessage: Message = { id: nextId(), role: 'user', text, mood: moodAtSend };
@@ -120,14 +147,18 @@ export default function ChatScreen() {
 
     (async () => {
       try {
-        const reply = await fetchNikoReply(moodAtSend, historyForApi);
+        const { reply, detectedMood } = await fetchNikoReply(moodAtSend, historyForApi);
         if (!mountedRef.current) return;
         // Read the mood live: if it changed while Niko was "thinking",
         // the reply lands in the mood the user is actually looking at.
         appendNikoReply(reply, moodRef.current);
+        // Shift mood for what comes next, not retroactively for this reply —
+        // it was already composed using the mood active when it was sent.
+        maybeAutoShiftMood(detectedMood);
       } catch {
         // Gemini/Vercel unreachable — fall back to a canned reply so the
-        // app still feels alive, with the same mood-dependent pacing.
+        // app still feels alive, with the same mood-dependent pacing. No
+        // classification is available offline, so mood doesn't auto-shift.
         const current = moodRef.current;
         await wait(THINK_MS[current]);
         if (!mountedRef.current) return;
@@ -138,10 +169,11 @@ export default function ChatScreen() {
         if (mountedRef.current) setThinking(false);
       }
     })();
-  }, [appendNikoReply]);
+  }, [appendNikoReply, maybeAutoShiftMood]);
 
   const handleMoodChange = useCallback((next: MoodKey) => {
     if (next === moodRef.current) return;
+    lastManualChangeRef.current = Date.now();
     setMood(next);
     setMessages((prev) => [
       ...prev,
@@ -177,7 +209,11 @@ export default function ChatScreen() {
         </Animated.View>
 
         <View style={styles.toggleArea}>
-          <MoodToggle value={mood} onChange={handleMoodChange} />
+          <MoodToggle
+            value={mood}
+            onChange={handleMoodChange}
+            autoShiftPulseKey={autoShiftPulseKey}
+          />
         </View>
       </Pressable>
 

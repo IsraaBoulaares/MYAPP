@@ -13,11 +13,15 @@ import { MOODS, MOOD_ORDER, palette, type MoodKey } from '../theme';
 type Props = {
   value: MoodKey;
   onChange: (mood: MoodKey) => void;
+  /** Bump this to play a brief highlight pulse around the track — used when
+   * mood changes via auto-detection rather than a direct tap, so the shift
+   * reads as intentional rather than a silent glitch. */
+  autoShiftPulseKey?: number;
 };
 
 const PAD = 4;
 
-export default function MoodToggle({ value, onChange }: Props) {
+export default function MoodToggle({ value, onChange, autoShiftPulseKey }: Props) {
   const [trackWidth, setTrackWidth] = useState(0);
   const pos = useRef(new Animated.Value(MOOD_ORDER.indexOf(value))).current;
 
@@ -32,6 +36,31 @@ export default function MoodToggle({ value, onChange }: Props) {
     }).start();
   }, [pos, value]);
 
+  const pulse = useRef(new Animated.Value(0)).current;
+  const isFirstPulse = useRef(true);
+  useEffect(() => {
+    // Skip the mount run — only real bumps (auto-shifts) should flash.
+    if (isFirstPulse.current) {
+      isFirstPulse.current = false;
+      return;
+    }
+    pulse.setValue(0);
+    Animated.sequence([
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+      Animated.timing(pulse, {
+        toValue: 0,
+        duration: 600,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [autoShiftPulseKey, pulse]);
+
   const onLayout = (e: LayoutChangeEvent) =>
     setTrackWidth(e.nativeEvent.layout.width);
 
@@ -39,7 +68,21 @@ export default function MoodToggle({ value, onChange }: Props) {
   const inputRange = MOOD_ORDER.map((_, i) => i);
 
   return (
-    <View style={styles.track} onLayout={onLayout}>
+    <View>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.pulseGlow,
+          {
+            opacity: pulse,
+            borderColor: MOODS[value].accent,
+            transform: [
+              { scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1.04] }) },
+            ],
+          },
+        ]}
+      />
+      <View style={styles.track} onLayout={onLayout}>
       {segment > 0 && (
         <Animated.View
           style={[
@@ -89,11 +132,21 @@ export default function MoodToggle({ value, onChange }: Props) {
           </Pressable>
         );
       })}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  pulseGlow: {
+    position: 'absolute',
+    top: -5,
+    left: -5,
+    right: -5,
+    bottom: -5,
+    borderRadius: 18,
+    borderWidth: 2,
+  },
   track: {
     flexDirection: 'row',
     backgroundColor: palette.surface,
