@@ -123,12 +123,17 @@ export default function ChatScreen() {
 
   // Applies a detected mood only if the user hasn't manually overridden it
   // recently — manual choice wins for MANUAL_OVERRIDE_MS before Niko starts
-  // reading tone on its own again.
+  // reading tone on its own again. 'steady' means "no emotional signal", so
+  // it never triggers a shift — only genuine soft/playful detections do.
+  // Updates moodRef.current synchronously (not just via the mood-state
+  // effect) so the reply about to be appended in this same round trip
+  // already reflects the shift, instead of lagging a message behind.
   const maybeAutoShiftMood = useCallback((detected: MoodKey | null) => {
-    if (!detected || detected === moodRef.current) return;
+    if (!detected || detected === 'steady' || detected === moodRef.current) return;
     const sinceManualChange = Date.now() - lastManualChangeRef.current;
     if (sinceManualChange < MANUAL_OVERRIDE_MS) return;
 
+    moodRef.current = detected;
     setMood(detected);
     setMessages((prev) => [
       ...prev,
@@ -149,12 +154,10 @@ export default function ChatScreen() {
       try {
         const { reply, detectedMood } = await fetchNikoReply(moodAtSend, historyForApi);
         if (!mountedRef.current) return;
-        // Read the mood live: if it changed while Niko was "thinking",
-        // the reply lands in the mood the user is actually looking at.
-        appendNikoReply(reply, moodRef.current);
-        // Shift mood for what comes next, not retroactively for this reply —
-        // it was already composed using the mood active when it was sent.
+        // Apply any mood shift first so the reply we're about to show
+        // already reflects it, not the following one.
         maybeAutoShiftMood(detectedMood);
+        appendNikoReply(reply, moodRef.current);
       } catch {
         // Gemini/Vercel unreachable — fall back to a canned reply so the
         // app still feels alive, with the same mood-dependent pacing. No

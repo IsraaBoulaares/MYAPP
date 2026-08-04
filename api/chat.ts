@@ -33,11 +33,28 @@ playful = light and quick).
 
 Alongside your reply, also classify the emotional tone of the user's
 CURRENT message ONLY — not the conversation history — as one of
-steady, soft, or playful: soft = the message expresses sadness,
-stress, tiredness, or difficulty; playful = the message is upbeat,
-excited, or joking; steady = the message is neutral, practical, or its
-tone is unclear. This classification is independent of the mood
-setting above and should reflect only what this message conveys.`;
+steady, soft, or playful. Judge the SITUATION being described, not
+just explicit emotion words — a rejection, loss, or setback is soft
+even if stated factually with no feeling-words attached; an
+engagement, achievement, or celebration is playful even if stated
+briefly.
+- soft: expresses or implies sadness, disappointment, stress,
+  tiredness, or difficulty. Examples: "I found out I didn't get the
+  job", "we broke up", "I'm behind on everything", "ugh, today was
+  exhausting".
+- playful: upbeat, excited, celebratory, or joking — including
+  exclamation points and enthusiastic phrasing about good news.
+  Examples: "I just got engaged!! I'm freaking out in the best way",
+  "I aced it!!", "we're getting a dog!!". Do not classify excited
+  good-news messages as soft just because they mention feeling
+  overwhelmed — "freaking out in the best way" is excitement, not
+  distress.
+- steady: neutral, practical, informational, or a mild passing
+  gripe with no real emotional weight — including factual questions
+  and small complaints like "ugh, traffic was bad". steady is also
+  the default when tone is genuinely unclear.
+This classification is independent of the mood setting above and
+should reflect only what this message conveys.`;
 
 const RESPONSE_SCHEMA = {
   type: Type.OBJECT,
